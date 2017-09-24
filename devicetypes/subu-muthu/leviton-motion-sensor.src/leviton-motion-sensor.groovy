@@ -23,6 +23,9 @@ metadata {
 		capability "Battery"
 		capability "Refresh"
         capability "Sensor"
+        capability "Health Check"
+        
+        command "enrollResponse"
 
 		fingerprint endpointId: "01", profileId: "0104", deviceId: "0107", deviceVersion: "00", inClusters: " 0000,0001,0003,0020,0406 "
 
@@ -65,11 +68,11 @@ metadata {
 def parse(String description) {
     def msg = zigbee.parse(description)
     
-    log.warn "--"
-    log.trace description
-    log.debug msg
-    def x = zigbee.parseDescriptionAsMap( description )
-    log.error x
+  //  log.warn "--"
+  //  log.trace description
+   // log.debug msg
+   // def x = zigbee.parseDescriptionAsMap( description )
+   // log.error x
     
 	Map map = [:]
     if (description?.startsWith('catchall:')) {
@@ -89,6 +92,7 @@ def parse(String description) {
 	}
 	else if (description?.startsWith('read attr -')) {
 		result = parseReportAttributeMessage(description).each { createEvent(it) }
+       //  log.debug "Reading attributes..."
 	}
 	return result
 }
@@ -103,7 +107,8 @@ def refresh() {
     refreshCmds +=zigbee.readAttribute(0x0001, 0x0020) // Read battery?
   //  refreshCmds += zigbee.readAttribute(0x0402, 0x0000) // Read temp?
    // refreshCmds += zigbee.readAttribute(0x0400, 0x0000) // Read luminance?
-    refreshCmds += zigbee.readAttribute(0x0406, 0x0000) // Read motion?
+  // refreshCmds +=zigbee.readAttribute(0x0001, 0x0021) // Read battery?
+   refreshCmds += zigbee.readAttribute(0x0406, 0x0000) // Read motion?
 
     return refreshCmds + enrollResponse()
 
@@ -120,14 +125,17 @@ def configure() {
     
     
 	def configCmds = []
-    configCmds += zigbee.batteryConfig()
+   // configCmds += zigbee.batteryConfig()
     
-    configCmds += zigbee.configureReporting(0x406,0x0000, 0x18, 30, 600, null) // motion // confirmed
+    configCmds += zigbee.configureReporting(0x0001, 0x0020, 0x20, 30, 1800, 0x01)
+    
+    configCmds += zigbee.configureReporting(0x406,0x0000, 0x18, 10, 1800, null) // motion // confirmed
     
     
     // Data type is not 0x20 = 0x8D invalid data type Unsigned 8-bit integer
     
-	//configCmds += zigbee.configureReporting(0x406,0x0000, 0x21, 60, 600, 0x20) // Set luminance reporting times?? maybe    
+//	configCmds += zigbee.configureReporting(0x0001, 0x0021, 0x20,DataType.UINT8, 30, 1800, 0x01)    
+    
     return refresh() + configCmds 
 }
 
@@ -136,7 +144,7 @@ def configure() {
  */
 
 private Map getMotionResult(value) {
-    //log.trace "Motion : " + value
+    log.trace "Motion : " + value
 	
     def descriptionText = value == "01" ? '{{ device.displayName }} detected motion':
 			'{{ device.displayName }} stopped detecting motion'
@@ -156,7 +164,7 @@ private Map getMotionResult(value) {
 */
 //TODO: needs calibration
 private Map getBatteryResult(rawValue) {
-	//log.debug "Battery rawValue = ${rawValue}"
+	log.debug "Battery rawValue = ${rawValue}"
 
 	def result = [
 		name: 'battery',
@@ -170,26 +178,8 @@ private Map getBatteryResult(rawValue) {
 	else {
 		if (volts > 3.5) {
 			result.descriptionText = "{{ device.displayName }} battery has too much power: (> 3.5) volts."
-		}
-		else {
-			if (device.getDataValue("manufacturer") == "SmartThings") {
-				volts = rawValue // For the batteryMap to work the key needs to be an int
-				def batteryMap = [28:100, 27:100, 26:100, 25:90, 24:90, 23:70,
-								  22:70, 21:50, 20:50, 19:30, 18:30, 17:15, 16:1, 15:0]
-				def minVolts = 15
-				def maxVolts = 28
-
-				if (volts < minVolts)
-					volts = minVolts
-				else if (volts > maxVolts)
-					volts = maxVolts
-				def pct = batteryMap[volts]
-				if (pct != null) {
-					result.value = pct
-					result.descriptionText = "{{ device.displayName }} battery was {{ value }}%"
-				}
-			}
-			else {
+		} else {
+            	log.debug "Battery volts = ${volts} v"
 				def minVolts = 2.1
 				def maxVolts = 3.0
 				def pct = (volts - minVolts) / (maxVolts - minVolts)
@@ -198,8 +188,8 @@ private Map getBatteryResult(rawValue) {
 					roundedPct = 1
 				result.value = Math.min(100, roundedPct)
 				result.descriptionText = "{{ device.displayName }} battery was {{ value }}%"
+                //result.value = volts
 			}
-		}
 	}
 
 	return result
@@ -221,12 +211,20 @@ private List parseReportAttributeMessage(String description) {
     // Motion
    	if (descMap.cluster == "0406" && descMap.attrId == "0000") {
     	result << getMotionResult(descMap.value)
+        //log.debug "Motion detectionresult:  ${result}"
 	}
     
     // Battery
-	else if (descMap.cluster == "0001" && descMap.attrId == "0020") {
+    else if (descMap.cluster == "0001" && descMap.attrId == "0020") {
 		result << getBatteryResult(Integer.parseInt(descMap.value, 16))
+      //   log.debug "Battery  detection rawvalue:  ${value}"
+      //   log.debug "Battery  detection result:  ${result}"
 	}
+    
+   else if (descMap.cluster == "0001" && descMap.attrId == "0021") {
+		// result << getBatteryResult(Integer.parseInt(descMap.value, 16))
+                  log.debug "Battery  detection % :  ${descMap.value}"
+	 }
 
 	return result
 }
@@ -238,7 +236,7 @@ private List parseReportAttributeMessage(String description) {
 private Map parseCatchAllMessage(String description) {
 	Map resultMap = [:]
 	def cluster = zigbee.parse(description)
-//	log.debug cluster
+	log.debug cluster
 	if (shouldProcessMessage(cluster)) {
 		switch(cluster.clusterId) {
 			case 0x0001:
